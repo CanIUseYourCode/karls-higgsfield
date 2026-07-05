@@ -41,8 +41,14 @@ Rules:
   unless the user explicitly asks.
 - Optional flags: `--mode pro` (higher quality), `--clip <path>` (specific
   motion clip instead of random), `--prompt "<text>"` (skip the outfit API),
-  `--dry-run` (plan + cost preview, spends nothing — use it when the user
-  seems unsure or asks "how much would X cost").
+  `--extra-prompt "<text>"` (append scene/lighting/vibe direction on top of
+  the random outfit — use when the user adds wishes like "at the beach",
+  "golden hour", "wearing sunglasses"), `--dry-run` (plan + cost preview,
+  spends nothing — use it when the user seems unsure or asks "how much
+  would X cost").
+- Kling motion control itself takes NO prompt (the API rejects it) — all
+  look/scene direction belongs on the image step via --prompt/--extra-prompt;
+  motion comes only from the clip.
 - On success, RESULT lists the finished MP4 paths in `made[]` — send the
   video file(s) back to the user in the chat, plus one line: how many made,
   credits spent, credits left.

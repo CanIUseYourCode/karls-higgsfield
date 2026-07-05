@@ -9,6 +9,7 @@
 //   --count <n>          default 1, capped by config.max_videos_per_request
 //   --clip <path>        use this motion clip for every video (default: random per video)
 //   --prompt <text>      use this prompt for every video (default: random outfit prompt)
+//   --extra-prompt <t>   appended to every prompt (steer scene/lighting/vibe on top of the random outfit)
 //   --mode std|pro       Kling quality mode (default from config)
 //   --dry-run            show the plan without spending credits
 //
@@ -29,6 +30,7 @@ function parseArgs(argv) {
     else if (a === "--count") args.count = parseInt(argv[++i], 10) || 1;
     else if (a === "--clip") args.clip = argv[++i];
     else if (a === "--prompt") args.prompt = argv[++i];
+    else if (a === "--extra-prompt") args.extraPrompt = argv[++i];
     else if (a === "--mode") args.mode = argv[++i];
     else if (a === "--dry-run") args.dryRun = true;
   }
@@ -88,6 +90,11 @@ if (args.prompt) {
   prompts = fetched.prompts;
   promptSource = fetched.source;
   console.log(`Outfit prompts: ${count} fetched from ${promptSource}`);
+}
+const extra = args.extraPrompt || cfg.extra_prompt || "";
+if (extra) {
+  prompts = prompts.map((p) => `${p}\n\n${extra}`);
+  console.log(`Extra prompt applied: "${extra}"`);
 }
 
 // --- dry run stops here ---
