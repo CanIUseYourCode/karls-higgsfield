@@ -1,74 +1,113 @@
 # Higgsfield Factory
 
-A reusable agent skill for **MaxAgents / OpenClaw** that turns a Higgsfield
-subscription into an automated character-video factory:
+A reusable **MaxAgents / OpenClaw** skill that turns a Higgsfield subscription
+into an automated character-video factory. You talk to your agent in plain
+language:
 
-> **"Hey Max, make 3 videos of Mia Lin"**
+> **"Make 3 videos of Mia Lin"**
 
-…and the agent will, for each video:
+…and for each video the agent:
 
-1. Fetch a random outfit prompt (from an [outfit-extractor](https://outfit-extractor.vercel.app) API, with automatic Firestore fallback)
-2. Generate a **Soul 2.0** image of that character wearing it (9:16)
-3. Pick a random motion clip from your pool and run **Kling 3.0 Motion Control**
-4. Download the finished MP4 and hand it back
+1. Fetches a random outfit prompt (from your [outfit-extractor](https://outfit-extractor.vercel.app) API, with automatic Firestore fallback)
+2. Generates a **Soul 2.0** image of that character wearing it (9:16, your realism defaults)
+3. Picks a random motion clip from your pool and runs **Kling 3.0 Motion Control**
+4. Downloads the finished MP4 and hands it back — and lists it on a local dashboard
 
-It also trains new Soul characters from a folder of photos, and ships a local
-web dashboard to browse everything that's been generated.
+It also trains new Soul characters from a folder of photos, and ships a web
+dashboard to browse everything generated.
 
-Uses the official [Higgsfield CLI](https://higgsfield.ai/cli) — your normal
-account login and plan credits. No API keys, no scraping.
+Runs entirely on the official [Higgsfield CLI](https://higgsfield.ai/cli) — your
+normal account login and plan credits. No developer API key, no scraping, no
+passwords through the agent.
 
-## Install (MaxAgents / OpenClaw)
+---
 
-Clone into your agent's skills folder:
+## Requirements
+
+- **Node.js 18+** and npm on the machine where the agent runs
+- A **Higgsfield account** with credits (any plan)
+- The **Higgsfield CLI** (`@higgsfield/cli`) — the skill installs it during onboarding
+
+---
+
+## Install into your agent
+
+Clone into your agent's skills directory (typically `~/.openclaw/skills/` or your
+MaxAgents workspace `skills/` folder — wherever skills are discovered):
 
 ```bash
 git clone https://github.com/<you>/higgsfield-factory <skills-dir>/higgsfield-factory
 ```
 
-(`<skills-dir>` is typically `~/.openclaw/skills` or your workspace `skills/`
-folder — wherever your MaxAgents install discovers skills.)
+Then just talk to your agent — say **"set up Higgsfield"** and it runs onboarding.
 
-Requirements on the machine where the agent runs: **Node 18+** and npm.
+---
 
-## Onboarding
+## Onboarding (what the agent walks you through)
 
-Ask the agent to "set up Higgsfield", or run manually:
+The agent runs `node scripts/onboard.mjs --json` and guides you through whatever
+is missing, in order:
 
-```bash
-node scripts/onboard.mjs
-```
+1. **Install the CLI** — the agent runs `npm install -g @higgsfield/cli` for you.
+2. **Connect your account** — YOU run this once in a terminal:
+   ```bash
+   higgsfield auth login
+   ```
+   A browser opens for a ~5-second sign-in. No API key, and the agent never sees
+   your password.
+   - **Headless server?** Tunnel the OAuth callback port from a machine with a
+     browser first:
+     ```bash
+     ssh -L 8765:localhost:8765 user@server
+     # then run `higgsfield auth login` on the server, open the printed URL locally
+     ```
+     The login uses refresh tokens, so the server stays logged in afterward.
+3. **Add motion clips** — send the agent (or drop into `motion_videos/`) the
+   video clips whose MOVEMENT you want characters to copy (a dance, a walk, a
+   pose). A subfolder named after a character (e.g. `motion_videos/Mia Lin/`)
+   makes those clips exclusive to that character; loose clips are shared.
+4. **Have a character** — either use one you've already trained, or ask the agent
+   to create one from photos (see below).
 
-It installs the Higgsfield CLI if missing, creates the folders, and tells you
-the one thing only you can do: **connect your Higgsfield account**:
+Re-running onboarding any time re-checks everything; it's safe and free.
 
-```bash
-higgsfield auth login
-```
+---
 
-That opens a browser for a 5-second sign-in. On a **headless server**, tunnel
-the OAuth callback port from a machine with a browser first:
-
-```bash
-ssh -L 8765:localhost:8765 user@server
-# then run `higgsfield auth login` on the server and open the printed URL locally
-```
-
-Finally, drop motion clips (`.mp4`/`.mov`/`.webm`) into `motion_videos/`.
-A subfolder named after a character (e.g. `motion_videos/Mia Lin/`) becomes
-that character's private clip pool; everything else is shared.
-
-## Usage
+## What you can say
 
 | You say | The agent runs |
 |---|---|
-| "make 1 video of Mia" | `node scripts/make-videos.mjs --character "Mia" --count 1` |
-| "make 5 pro videos of yumi" | `node scripts/make-videos.mjs --character yumi --count 5 --mode pro` |
+| "set up Higgsfield" / "am I ready?" | `node scripts/onboard.mjs --json` |
+| "how many credits / what characters do I have?" | `node scripts/status.mjs --json` |
+| "make 1 video of Mia" | `make-videos.mjs --character "Mia" --count 1` |
+| "make 5 pro videos of yumi at golden hour" | `make-videos.mjs --character yumi --count 5 --mode pro --extra-prompt "golden hour"` |
 | "how much would 10 videos cost?" | same with `--dry-run` (spends nothing) |
-| "create a character called Ana from these photos" | `node scripts/create-character.mjs --name "Ana" --images <folder>` |
-| "show me the dashboard" | `node scripts/serve-ui.mjs` → http://localhost:7788 |
+| "create a character called Ana from these photos" | `create-character.mjs --name "Ana" --images <folder>` |
+| "show me my videos" | `serve-ui.mjs` → http://localhost:7788 |
 
-Results land in `output/` (MP4 + the Soul reference image + `manifest.json`).
+Results land in `output/`: the MP4, the Soul reference image, and `manifest.json`
+(the dashboard's index).
+
+---
+
+## How control works
+
+| Dial | Set by |
+|---|---|
+| **Who** (identity/face) | the character name → its trained Soul ID |
+| **What they wear** | random outfit from your database (or `--prompt` to fully override) |
+| **Where / lighting / vibe** | `--extra-prompt` (+ the realism default in config) |
+| **How they move** | the motion clip |
+| **Quality** | `--mode std` (default) or `pro` |
+
+> **Note on video prompts:** Kling 3.0 Motion Control does not accept a text
+> prompt on the CLI/API surface — the web UI's prompt box uses a separate,
+> unsupported endpoint. All look/scene direction is applied on the **image**
+> step (`--prompt` / `--extra-prompt`), which is where it actually matters; the
+> motion (matching camera + character movement) is what Motion Control does by
+> default. This keeps the skill on Higgsfield's supported, stable API.
+
+---
 
 ## Dashboard
 
@@ -77,31 +116,84 @@ node scripts/serve-ui.mjs        # http://localhost:7788
 ```
 
 Dark-mode gallery of every generated video: play inline, filter by character,
-download, live credit balance. Read-only — it never spends credits.
+download, live credit balance. Read-only — never spends credits. The agent keeps
+it running in the background when you ask to see your videos.
+
+---
 
 ## Configuration (`config.json`)
 
-Created from `config.default.json` on first onboard. Notable keys:
+Created from `config.default.json` on first onboarding. Notable keys:
 
 | key | default | meaning |
 |---|---|---|
 | `aspect_ratio` | `9:16` | Soul image ratio |
-| `mode` | `std` | Kling quality (`std`/`pro`) |
+| `quality` | `2k` | Soul image quality |
+| `mode` | `std` | Kling quality (`std` / `pro`) |
+| `background_source` | `input_image` | keep the image's background, or `input_video` |
 | `max_videos_per_request` | `10` | hard cap per request |
 | `credit_floor` | `25` | refuse to start below this balance |
+| `extra_prompt` | realism string | appended to every image prompt |
 | `prompt_api` | outfit-extractor URL | primary prompt source (text/plain) |
-| `prompt_preset` | `""` | text prepended to Firestore-fallback prompts |
-| `background_source` | `input_image` | keep image's background, or `input_video` |
+| `prompt_preset` | `""` | prepended to Firestore-fallback prompts |
+| `firestore_fallback` | (Firestore query) | used automatically if `prompt_api` is down |
+| `ui_port` | `7788` | dashboard port |
 
-## Safety rails
+---
 
-- Batch size hard-capped per request; agent confirms anything over 5.
-- Credit floor stops runs before the account is drained.
-- Training a character always requires explicit user confirmation (it costs credits).
-- Login is always done by the human in a browser — the agent never touches passwords.
+## Safety rails (built in)
 
-## Credits & costs
+- Batch size hard-capped per request; the agent confirms anything over 5.
+- `credit_floor` stops runs before your account is drained.
+- Training a character always requires explicit confirmation (it costs credits).
+- Account login is always done by you in a browser — the agent never touches
+  passwords.
+- Content blocked by Higgsfield's filter surfaces as a clean `nsfw` job status,
+  not a crash.
 
-- Soul 2.0 image: ~0.12 credits each
-- Kling 3.0 Motion Control: billed by clip length and mode — run one video and
-  check `higgsfield account status` to calibrate your plan.
+---
+
+## Costs (measured)
+
+- Soul 2.0 image: **~0.12 credits**
+- Kling 3.0 Motion Control (13s clip, `std`): **~23 credits** per video
+  (`pro` and longer clips cost more)
+
+Run one video and check `node scripts/status.mjs` to calibrate for your plan and
+clip lengths.
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| "Not authenticated" / no credits shown | `higgsfield auth login` |
+| `higgsfield` not found | `npm install -g @higgsfield/cli`. On Windows, if npm's postinstall fails with a tar error, download `hf.exe` from the [CLI releases](https://github.com/higgsfield-ai/cli/releases) and set `HIGGSFIELD_BIN` to its full path. |
+| Video generation seems stuck | Ensure you're on current scripts (they upload the clip first, then generate). Renders themselves take a few minutes. |
+| Job comes back `nsfw` | Higgsfield's content filter blocked it. Not a bug — soften the outfit/scene wording. |
+| Outfit prompts fail | The skill auto-falls back to the Firestore database; only an issue if both are down. |
+| Dashboard shows no data | The dashboard needs its server running (`serve-ui.mjs`); opening the HTML file directly won't work. |
+
+---
+
+## Repo layout
+
+```
+higgsfield-factory/
+  SKILL.md              agent playbook (how the agent uses this)
+  README.md             this file
+  config.default.json   defaults (copied to config.json on setup)
+  scripts/
+    lib.mjs             shared helpers (CLI wrapper, prompts, clips, downloads)
+    onboard.mjs         setup state machine (--json for agents)
+    status.mjs          credits + inventory (--json)
+    make-videos.mjs     the pipeline
+    create-character.mjs Soul training from photos
+    serve-ui.mjs        dashboard server
+  ui/index.html         dashboard page
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
