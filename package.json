@@ -1,10 +1,12 @@
 {
   "name": "higgsfield-factory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MaxAgents/OpenClaw skill: Higgsfield Soul 2.0 + Kling 3.0 Motion Control character-video factory",
   "type": "module",
   "engines": { "node": ">=18" },
   "scripts": {
+    "make": "node scripts/make-videos.mjs",
+    "check": "node scripts/check.mjs",
     "onboard": "node scripts/onboard.mjs",
     "status": "node scripts/status.mjs --json",
     "job-status": "node scripts/job-status.mjs",

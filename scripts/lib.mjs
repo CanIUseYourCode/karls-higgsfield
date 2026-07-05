@@ -271,6 +271,33 @@ export function appendFailure(cfg, entry) {
   writeFileSync(failuresPath(cfg), JSON.stringify(list, null, 2));
 }
 
+// ---------- pending-job queue (make-videos.mjs submits, check.mjs advances) ----------
+
+export function queuePath(cfg) {
+  return join(cfg.output_dir, "queue.json");
+}
+
+export function readQueue(cfg) {
+  const p = queuePath(cfg);
+  if (!existsSync(p)) return [];
+  try { return JSON.parse(readFileSync(p, "utf8")); } catch { return []; }
+}
+
+export function writeQueue(cfg, items) {
+  writeFileSync(queuePath(cfg), JSON.stringify(items, null, 2));
+}
+
+// Map an error/status onto a coarse failure type agents can act on.
+export function classifyFailure(message, job) {
+  const status = job?.status || "";
+  if (status === "nsfw" || /nsfw|content filter|moderation/i.test(message)) return "content_blocked";
+  if (status === "failed" || /status "failed"|status failed|generation failed/i.test(message)) return "generation_failed";
+  if (/timed out|timeout/i.test(message)) return "timeout";
+  if (/not authenticated|session expired|login/i.test(message)) return "auth";
+  if (/credits|balance|floor/i.test(message)) return "credits";
+  return "unknown";
+}
+
 // ---------- downloads ----------
 
 export async function download(url, filePath) {

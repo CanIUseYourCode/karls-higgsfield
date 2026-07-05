@@ -1,8 +1,9 @@
 {
   "aspect_ratio": "9:16",
   "quality": "2k",
-  "mode": "std",
+  "mode": "pro",
   "background_source": "input_image",
+  "max_active_videos": 5,
   "max_videos_per_request": 10,
   "credit_floor": 25,
   "motion_dir": "motion_videos",

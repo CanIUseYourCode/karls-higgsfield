@@ -1,8 +1,11 @@
-// Make character videos: outfit prompt -> Soul 2.0 image -> Kling 3.0 Motion Control -> MP4.
+// Submit character videos: outfit prompt -> Soul 2.0 image -> Kling 3.0
+// Motion Control -> MP4. This script only SUBMITS jobs — it never waits for
+// renders, so it always exits within a minute or two.
+//
+// Collect the results with check.mjs (run it every ~2 minutes until all_done):
 //
 //   node scripts/make-videos.mjs --character "Mia Lin" --count 1
-//   node scripts/make-videos.mjs --character mia --count 5 --mode pro
-//   node scripts/make-videos.mjs --character mia --dry-run          (plan + cost, spends nothing)
+//   node scripts/check.mjs
 //
 // Flags:
 //   --character <name>   required; fuzzy-matched against trained Soul characters
@@ -11,20 +14,23 @@
 //   --prompt <text>      use this prompt for every video (default: random outfit prompt)
 //   --extra-prompt <t>   appended to every prompt (steer scene/lighting/vibe on top of the random outfit)
 //   --mode std|pro       Kling quality mode (default from config)
+//   --force              submit even though this character already has pending videos
 //   --dry-run            show the plan without spending credits
 //
 // Prints human-readable progress; the last line is machine-readable JSON (RESULT:{...}).
 
 import {
   loadConfig, ensureDirs, hf, parseJob, getCredits, resolveCharacter,
-  fetchOutfitPrompts, pickClip, listClips, slug, appendManifest, appendFailure,
-  download, ROOT,
+  fetchOutfitPrompts, pickClip, listClips, slug, appendFailure,
+  classifyFailure, readQueue, writeQueue,
 } from "./lib.mjs";
-import { join, basename } from "node:path";
+import { basename } from "node:path";
 import { existsSync } from "node:fs";
 
+const CHECK_CMD = "node scripts/check.mjs";
+
 function parseArgs(argv) {
-  const args = { count: 1, dryRun: false };
+  const args = { count: 1, dryRun: false, force: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--character") args.character = argv[++i];
@@ -33,6 +39,7 @@ function parseArgs(argv) {
     else if (a === "--prompt") args.prompt = argv[++i];
     else if (a === "--extra-prompt") args.extraPrompt = argv[++i];
     else if (a === "--mode") args.mode = argv[++i];
+    else if (a === "--force") args.force = true;
     else if (a === "--dry-run") args.dryRun = true;
   }
   return args;
@@ -42,29 +49,6 @@ function fail(msg) {
   console.error(`ERROR: ${msg}`);
   console.log("RESULT:" + JSON.stringify({ ok: false, error: msg }));
   process.exit(1);
-}
-
-const JOB_ID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
-
-function classifyFailure(message, job) {
-  const status = job?.status || "";
-  if (status === "nsfw" || /nsfw|content filter|moderation/i.test(message)) return "content_blocked";
-  if (status === "failed" || /status "failed"|status failed|generation failed/i.test(message)) return "generation_failed";
-  if (/timed out|timeout/i.test(message)) return "timeout";
-  if (/not authenticated|session expired|login/i.test(message)) return "auth";
-  if (/credits|balance|floor/i.test(message)) return "credits";
-  return "unknown";
-}
-
-async function jobFromError(error) {
-  const message = String(error?.message || error || "");
-  const id = message.match(JOB_ID_RE)?.[0] || null;
-  if (!id) return { id: null, job: null };
-  try {
-    return { id, job: parseJob(await hf(["generate", "get", id, "--json"], { timeoutMs: 60_000 })) };
-  } catch {
-    return { id, job: null };
-  }
 }
 
 const args = parseArgs(process.argv);
@@ -81,7 +65,7 @@ if (args.count > count) {
 // --- credits guard ---
 const creditsStart = await getCredits();
 if (creditsStart === null) {
-  fail("Not logged in to Higgsfield. Run: higgsfield auth login");
+  fail("Not logged in to Higgsfield. The USER must run: higgsfield auth login");
 }
 if (creditsStart < (cfg.credit_floor || 0)) {
   fail(`Credit balance ${creditsStart} is below the safety floor of ${cfg.credit_floor}. Top up or lower credit_floor in config.json.`);
@@ -96,6 +80,15 @@ if (!chosen) {
 console.log(`Character: ${chosen.name} (${chosen.id})`);
 if (alternates.length) {
   console.log(`  (also matched: ${alternates.map((c) => c.name).join(", ")} — using closest match)`);
+}
+
+// --- double-submit guard (the classic way agents waste credits) ---
+const queue = readQueue(cfg);
+if (!args.dryRun && !args.force) {
+  const pendingSame = queue.filter((q) => q.character === chosen.name).length;
+  if (pendingSame > 0) {
+    fail(`${chosen.name} already has ${pendingSame} pending video(s). They are NOT lost — collect them with: ${CHECK_CMD}. Only if you really want ADDITIONAL videos, re-run with --force.`);
+  }
 }
 
 // --- motion clips ---
@@ -130,50 +123,32 @@ if (args.dryRun) {
   }));
   for (const row of plan) console.log(`  [${row.video}] clip=${row.clip} prompt="${row.prompt_preview}"`);
   console.log(`Estimated image cost: ${(0.12 * count).toFixed(2)} credits. Video cost depends on clip length/mode and is billed by Higgsfield per job.`);
-  console.log("RESULT:" + JSON.stringify({ ok: true, dry_run: true, character: chosen.name, videos_planned: count, prompt_source: promptSource }));
+  console.log("RESULT:" + JSON.stringify({
+    ok: true, dry_run: true, character: chosen.name, videos_planned: count,
+    prompt_source: promptSource,
+    next: "Submit for real by re-running without --dry-run.",
+  }));
   process.exit(0);
 }
 
-// --- generate ---
-const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "").replace(/(\d{8})(\d{4})/, "$1_$2");
+// --- submit (upload clip once per file, then queue one Soul image job per video) ---
+// second-resolution stamp so labels (and their image/video files) can never
+// collide across back-to-back submits
+const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "").replace(/(\d{8})(\d{6})/, "$1_$2");
 const uploadCache = new Map(); // clip path -> higgsfield upload id (avoid re-uploading)
-const results = [];
+const queuedItems = [];
 const failures = [];
 let failed = 0;
 
 for (let i = 0; i < count; i++) {
   const label = `${slug(chosen.name)}_${stamp}_${i + 1}`;
   const tag = `[${i + 1}/${count}]`;
-  let stage = "starting";
-  let soul = null;
-  let kling = null;
-  let imageFile = null;
+  let stage = "upload";
   let clipPath = null;
-  let clipRef = null;
   try {
-    // 1) Soul 2.0 image with the character identity
-    stage = "image";
-    console.log(`${tag} generating Soul 2.0 image of ${chosen.name}...`);
-    soul = parseJob(await hf([
-      "generate", "create", "text2image_soul_v2",
-      "--prompt", prompts[i],
-      "--soul-id", chosen.id,
-      "--aspect_ratio", cfg.aspect_ratio || "9:16",
-      "--quality", cfg.quality || "2k",
-      "--wait", "--json",
-    ]));
-    if (soul.status !== "completed") throw new Error(`image job ${soul.id} ended: ${soul.status}`);
-    if (soul.result_url) {
-      imageFile = join(cfg.output_dir, `${label}_image.png`);
-      try { await download(soul.result_url, imageFile); } catch { imageFile = null; }
-    }
-
-    // 2) pick motion clip and upload it explicitly (the CLI hangs if generate
-    //    create has to auto-upload a local video for this job type); cache the
-    //    upload id so the same file only uploads once per run
-    stage = "upload";
+    // 1) motion clip upload first — if it fails we haven't spent image credits
     clipPath = args.clip || pickClip(cfg, chosen.name);
-    clipRef = uploadCache.get(clipPath);
+    let clipRef = uploadCache.get(clipPath);
     if (!clipRef) {
       console.log(`${tag} uploading motion clip ${basename(clipPath)}...`);
       const up = JSON.parse(await hf(["upload", "create", clipPath, "--json"], { timeoutMs: 10 * 60 * 1000 }));
@@ -183,86 +158,74 @@ for (let i = 0; i < count; i++) {
       uploadCache.set(clipPath, clipRef);
     }
 
-    // 3) Kling 3.0 Motion Control — Soul job id feeds in directly
-    stage = "video";
-    console.log(`${tag} animating with motion from ${basename(clipPath)} (${mode})...`);
-    kling = parseJob(await hf([
-      "generate", "create", "kling3_0_motion_control",
-      "--image", soul.id,
-      "--video", clipRef,
-      "--mode", mode,
-      "--background_source", cfg.background_source || "input_image",
-      "--wait", "--wait-timeout", "30m", "--json",
-    ]));
-    if (kling.status !== "completed") throw new Error(`video job ${kling.id} ended: ${kling.status}`);
+    // 2) submit the Soul 2.0 image job — no --wait, check.mjs takes it from here
+    stage = "image";
+    console.log(`${tag} submitting Soul 2.0 image of ${chosen.name}...`);
+    const soul = parseJob(await hf([
+      "generate", "create", "text2image_soul_v2",
+      "--prompt", prompts[i],
+      "--soul-id", chosen.id,
+      "--aspect_ratio", cfg.aspect_ratio || "9:16",
+      "--quality", cfg.quality || "2k",
+      "--json",
+    ], { timeoutMs: 3 * 60 * 1000 }));
+    if (!soul?.id) throw new Error("image submit returned no job id");
 
-    const url = kling.result_url || kling.min_result_url;
-    if (!url) throw new Error(`video job ${kling.id} finished but returned no result URL`);
-
-    // 4) download
-    console.log(`${tag} downloading...`);
-    const videoFile = join(cfg.output_dir, `${label}.mp4`);
-    await download(url, videoFile);
-
-    const entry = {
-      time: new Date().toISOString(),
+    queue.push({
+      id: label,
       character: chosen.name,
-      video: `${label}.mp4`,
-      image: imageFile ? basename(imageFile) : null,
-      clip: basename(clipPath),
-      prompt_source: promptSource,
-      prompt: prompts[i].slice(0, 300),
+      stage: "image", // image -> ready -> video (check.mjs advances it)
       soul_job: soul.id,
-      kling_job: kling.id,
-      result_url: url,
-    };
-    appendManifest(cfg, entry);
-    results.push(entry);
-    console.log(`${tag} DONE -> ${videoFile}`);
+      kling_job: null,
+      clip: clipPath,
+      clip_upload_id: clipRef,
+      mode,
+      prompt: prompts[i].slice(0, 300),
+      prompt_source: promptSource,
+      image_file: null,
+      created: new Date().toISOString(),
+    });
+    queuedItems.push(label);
+    console.log(`${tag} queued (image job ${soul.id})`);
   } catch (e) {
     failed++;
     const message = String(e?.message || e);
-    const failedJob = await jobFromError(e);
-    if (!kling && failedJob.job?.job_type?.includes("motion_control")) kling = failedJob.job;
-    if (!soul && failedJob.job?.job_type?.includes("soul")) soul = failedJob.job;
-
-    const job = failedJob.job || kling || soul || null;
-    const errorType = classifyFailure(message, job);
+    const errorType = classifyFailure(message, null);
     const failure = {
       time: new Date().toISOString(),
       character: chosen.name,
       index: i + 1,
       stage,
       error_type: errorType,
-      status: job?.status || null,
+      status: null,
       message,
-      soul_job: soul?.id || null,
-      kling_job: kling?.id || failedJob.id,
-      job_type: job?.job_type || null,
-      result_url: job?.result_url || null,
-      image: imageFile ? basename(imageFile) : null,
+      soul_job: null,
+      kling_job: null,
+      job_type: null,
+      result_url: null,
+      image: null,
       clip: clipPath ? basename(clipPath) : null,
       retryable: !["content_blocked", "auth", "credits"].includes(errorType),
     };
     failures.push(failure);
     appendFailure(cfg, failure);
-    console.error(`${tag} FAILED: ${message}`);
-    console.error(`${tag} FAILURE_JSON:${JSON.stringify(failure)}`);
+    console.error(`${tag} FAILED to submit: ${message}`);
   }
 }
 
-const creditsEnd = await getCredits();
-const spent = creditsStart !== null && creditsEnd !== null
-  ? Math.round((creditsStart - creditsEnd) * 100) / 100 : null;
+writeQueue(cfg, queue);
 
-console.log(`Finished: ${results.length} ok, ${failed} failed.` + (spent !== null ? ` Credits spent: ${spent} (left: ${creditsEnd})` : ""));
+const next = queuedItems.length
+  ? `Run every ~2 minutes until RESULT.all_done is true: ${CHECK_CMD}`
+  : "Nothing was submitted — fix the error above and try again.";
+console.log(`Submitted ${queuedItems.length}/${count} video job(s).` + (queuedItems.length ? ` Collect them with: ${CHECK_CMD}` : ""));
 console.log("RESULT:" + JSON.stringify({
   ok: failed === 0,
   character: chosen.name,
-  made: results.map((r) => ({ video: join(cfg.output_dir, r.video), image: r.image ? join(cfg.output_dir, r.image) : null })),
+  submitted: queuedItems.length,
+  queued: queuedItems,
   failed,
   failures,
-  credits_spent: spent,
-  credits_left: creditsEnd,
+  next,
 }));
-process.exit(failed > 0 && results.length === 0 ? 1 : 0);
+process.exit(failed > 0 && queuedItems.length === 0 ? 1 : 0);

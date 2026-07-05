@@ -18,7 +18,7 @@
 // }
 
 import { spawnSync } from "node:child_process";
-import { existsSync, copyFileSync, readdirSync } from "node:fs";
+import { existsSync, copyFileSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   ROOT, loadConfig, ensureDirs, findHiggsfieldBin, getCredits, listCharacters,
@@ -27,8 +27,11 @@ import {
 const jsonMode = process.argv.includes("--json");
 const say = (s) => { if (!jsonMode) console.log(s); };
 
+const SKILL_VERSION = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
+
 const state = {
   ready: false,
+  skill_version: SKILL_VERSION,
   cli_installed: false,
   authenticated: false,
   credits: null,
@@ -38,7 +41,7 @@ const state = {
   next_steps: [],
 };
 
-say("=== Higgsfield Factory — setup check ===\n");
+say(`=== Higgsfield Factory — setup check (skill v${SKILL_VERSION}) ===\n`);
 
 // 1) config + folders (agent-fixable, always succeeds)
 if (!existsSync(join(ROOT, "config.json"))) {
@@ -83,12 +86,16 @@ if (bin) {
     say(`[ok] Higgsfield account connected — ${state.credits} credits available`);
   } else {
     say("[!!] No Higgsfield account connected on this machine.");
-    say("     Run in a terminal:  higgsfield auth login");
-    say("     (opens a browser for a 5-second sign-in — no password ever goes through the agent)");
+    say("     Machine WITH a browser: run  higgsfield auth login  (5-second sign-in).");
+    say("     HEADLESS/CLOUD machine: do NOT run auth login here — the long URL it");
+    say("     prints redirects to localhost on THIS machine and can never complete");
+    say("     from the user's browser. Use the credentials import instead:");
+    say("       user logs in on their own computer, sends ~/.higgsfield/credentials.json,");
+    say("       agent runs:  node scripts/import-auth.mjs '<pasted JSON>'");
     state.next_steps.push({
       id: "auth_login",
       who: "user",
-      action: "Open a terminal on this machine and run: higgsfield auth login — a browser opens, sign in to your Higgsfield account, done. On a headless server, first tunnel the callback port: ssh -L 8765:localhost:8765 user@server, then run the login on the server and open the printed URL locally.",
+      action: "If THIS machine can open a browser: run `higgsfield auth login` and sign in — done. If this is a HEADLESS/CLOUD machine (typical agent runtime): DO NOT run auth login here and NEVER send the user the long OAuth URL it prints (its localhost redirect cannot complete remotely). Instead ask the user to do this on their own computer: 1) npm install -g @higgsfield/cli  2) higgsfield auth login  3) open the file ~/.higgsfield/credentials.json (Windows: C:\\Users\\<you>\\.higgsfield\\credentials.json) and paste its contents to you. Then run: node scripts/import-auth.mjs '<pasted JSON>' and re-run onboarding. The paste is a revocable login token, not a password.",
     });
   }
 }
