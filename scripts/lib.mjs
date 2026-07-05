@@ -82,6 +82,16 @@ export function parseJob(jsonText) {
   return Array.isArray(parsed) ? parsed[0] : parsed;
 }
 
+// `generate create` WITHOUT --wait prints only the new job id(s), e.g.
+// ["9f2c..."]; WITH --wait it prints full job objects. Normalize both shapes
+// to an object that always has { id }.
+export function parseCreate(jsonText) {
+  const parsed = JSON.parse(jsonText);
+  const first = Array.isArray(parsed) ? parsed[0] : parsed;
+  if (typeof first === "string") return { id: first, status: "queued" };
+  return first;
+}
+
 export async function getCredits() {
   try {
     const status = await hf(["account", "status"], { timeoutMs: 60_000 });

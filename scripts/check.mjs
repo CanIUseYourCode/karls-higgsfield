@@ -14,7 +14,7 @@
 //   any failure                       -> record in output/failures.json, remove
 
 import {
-  loadConfig, ensureDirs, hf, parseJob, getCredits, classifyFailure,
+  loadConfig, ensureDirs, hf, parseJob, parseCreate, getCredits, classifyFailure,
   readQueue, writeQueue, appendManifest, appendFailure, download,
 } from "./lib.mjs";
 import { join, basename } from "node:path";
@@ -71,16 +71,42 @@ function recordFailure(item, job, message) {
   console.error(`[${item.id}] FAILED (${item.stage}): ${message}`);
 }
 
+// A video submit can time out on the client AFTER the server accepted the
+// job. Before submitting, look for an existing motion-control job made from
+// this exact image and adopt it instead of paying for a duplicate.
+let recentVideoJobs = null;
+async function findExistingVideoJob(soulJobId) {
+  if (!recentVideoJobs) {
+    try {
+      const parsed = JSON.parse(await hf(["generate", "list", "--video", "--size", "50", "--json"], { timeoutMs: 60_000 }));
+      recentVideoJobs = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      recentVideoJobs = [];
+    }
+  }
+  return recentVideoJobs.find(
+    (j) => (j.job_type || "").includes("motion_control") && JSON.stringify(j).includes(soulJobId)
+  ) || null;
+}
+
 async function submitVideo(item) {
+  const existing = await findExistingVideoJob(item.soul_job);
+  if (existing) {
+    console.log(`[${item.id}] found existing video job ${existing.id} for this image — adopting it, NOT resubmitting`);
+    item.kling_job = existing.id;
+    item.stage = "video";
+    activeVideos++;
+    return;
+  }
   console.log(`[${item.id}] image ready — submitting Kling 3.0 video (${item.mode})...`);
-  const kling = parseJob(await hf([
+  const kling = parseCreate(await hf([
     "generate", "create", "kling3_0_motion_control",
     "--image", item.soul_job,
     "--video", item.clip_upload_id,
     "--mode", item.mode,
     "--background_source", cfg.background_source || "input_image",
     "--json",
-  ], { timeoutMs: 3 * 60 * 1000 }));
+  ], { timeoutMs: 10 * 60 * 1000 }));
   if (!kling?.id) throw new Error("video submit returned no job id");
   item.kling_job = kling.id;
   item.stage = "video";

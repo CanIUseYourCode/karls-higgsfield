@@ -20,7 +20,7 @@
 // Prints human-readable progress; the last line is machine-readable JSON (RESULT:{...}).
 
 import {
-  loadConfig, ensureDirs, hf, parseJob, getCredits, resolveCharacter,
+  loadConfig, ensureDirs, hf, parseCreate, getCredits, resolveCharacter,
   fetchOutfitPrompts, pickClip, listClips, slug, appendFailure,
   classifyFailure, readQueue, writeQueue,
 } from "./lib.mjs";
@@ -161,7 +161,7 @@ for (let i = 0; i < count; i++) {
     // 2) submit the Soul 2.0 image job — no --wait, check.mjs takes it from here
     stage = "image";
     console.log(`${tag} submitting Soul 2.0 image of ${chosen.name}...`);
-    const soul = parseJob(await hf([
+    const soul = parseCreate(await hf([
       "generate", "create", "text2image_soul_v2",
       "--prompt", prompts[i],
       "--soul-id", chosen.id,
