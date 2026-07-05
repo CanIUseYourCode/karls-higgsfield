@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Higgsfield Factory</title>
+<style>
+  :root {
+    --bg: #0b0b10; --card: #15151d; --edge: #23232e;
+    --text: #ececf1; --dim: #8b8b9a; --accent: #b48cff; --ok: #4ade80;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 18px 24px; border-bottom: 1px solid var(--edge);
+    position: sticky; top: 0; background: rgba(11,11,16,.92); backdrop-filter: blur(8px); z-index: 5;
+  }
+  h1 { font-size: 18px; letter-spacing: .4px; }
+  h1 span { color: var(--accent); }
+  .pill {
+    border: 1px solid var(--edge); border-radius: 999px; padding: 4px 14px;
+    font-size: 13px; color: var(--dim);
+  }
+  .pill b { color: var(--text); font-weight: 600; }
+  select {
+    margin-left: auto; background: var(--card); color: var(--text);
+    border: 1px solid var(--edge); border-radius: 8px; padding: 6px 10px; font-size: 14px;
+  }
+  main { padding: 24px; display: grid; gap: 18px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  .card {
+    background: var(--card); border: 1px solid var(--edge); border-radius: 14px;
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .card video { width: 100%; aspect-ratio: 9/16; object-fit: cover; background: #000; display: block; }
+  .meta { padding: 10px 12px 12px; display: grid; gap: 4px; }
+  .who { font-weight: 600; font-size: 14px; }
+  .sub { color: var(--dim); font-size: 12px; }
+  .prompt { color: var(--dim); font-size: 12px; max-height: 3.6em; overflow: hidden; }
+  .empty { grid-column: 1/-1; text-align: center; color: var(--dim); padding: 80px 20px; }
+  .empty code { color: var(--accent); }
+  a.dl { color: var(--accent); font-size: 12px; text-decoration: none; }
+  a.dl:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Higgsfield <span>Factory</span></h1>
+  <div class="pill">Credits: <b id="credits">—</b></div>
+  <div class="pill">Characters: <b id="charcount">—</b></div>
+  <select id="filter"><option value="">All characters</option></select>
+</header>
+<main id="grid"><div class="empty">Loading…</div></main>
+<script>
+let DATA = { items: [], characters: [], credits: null };
+
+function esc(s) { return String(s || "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
+
+function render() {
+  const who = document.getElementById("filter").value;
+  const grid = document.getElementById("grid");
+  const items = DATA.items.filter(it => !who || it.character === who);
+  if (!items.length) {
+    grid.innerHTML = '<div class="empty">No videos yet.<br><br>Ask your agent: <code>make 1 video of ' +
+      esc(DATA.characters[0] || "your character") + '</code></div>';
+    return;
+  }
+  grid.innerHTML = items.map(it => `
+    <div class="card">
+      <video src="/files/${encodeURIComponent(it.video)}" controls preload="metadata"
+             ${it.image ? `poster="/files/${encodeURIComponent(it.image)}"` : ""} playsinline></video>
+      <div class="meta">
+        <div class="who">${esc(it.character)}</div>
+        <div class="sub">${new Date(it.time).toLocaleString()} · motion: ${esc(it.clip)}</div>
+        <div class="prompt">${esc(it.prompt)}</div>
+        <a class="dl" href="/files/${encodeURIComponent(it.video)}" download>download mp4</a>
+      </div>
+    </div>`).join("");
+}
+
+async function load() {
+  try {
+    const r = await fetch("/api/data");
+    DATA = await r.json();
+    document.getElementById("credits").textContent = DATA.credits ?? "—";
+    document.getElementById("charcount").textContent = DATA.characters.length;
+    const sel = document.getElementById("filter");
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">All characters</option>' +
+      DATA.characters.map(c => `<option ${c === cur ? "selected" : ""}>${esc(c)}</option>`).join("");
+    render();
+  } catch (e) {
+    document.getElementById("grid").innerHTML = '<div class="empty">Could not reach the server.</div>';
+  }
+}
+
+document.getElementById("filter").addEventListener("change", render);
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

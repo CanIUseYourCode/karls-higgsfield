@@ -1,0 +1,18 @@
+{
+  "aspect_ratio": "9:16",
+  "quality": "2k",
+  "mode": "std",
+  "background_source": "input_image",
+  "max_videos_per_request": 10,
+  "credit_floor": 25,
+  "motion_dir": "motion_videos",
+  "output_dir": "output",
+  "prompt_api": "https://outfit-extractor.vercel.app/api/random-outfit/all",
+  "prompt_preset": "",
+  "firestore_fallback": {
+    "url": "https://firestore.googleapis.com/v1/projects/gen-lang-client-0729304290/databases/ai-studio-a5fcd6f6-7a22-4d5d-b310-afab4361d2bf/documents:runQuery",
+    "collection": "prompts",
+    "limit": 150
+  },
+  "ui_port": 7788
+}

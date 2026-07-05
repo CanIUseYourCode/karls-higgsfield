@@ -1,0 +1,5 @@
+config.json
+output/
+motion_videos/
+node_modules/
+*.log
