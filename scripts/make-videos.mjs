@@ -130,9 +130,19 @@ for (let i = 0; i < count; i++) {
       try { await download(soul.result_url, imageFile); } catch { imageFile = null; }
     }
 
-    // 2) pick motion clip (cached upload id after first use of the same file)
+    // 2) pick motion clip and upload it explicitly (the CLI hangs if generate
+    //    create has to auto-upload a local video for this job type); cache the
+    //    upload id so the same file only uploads once per run
     const clipPath = args.clip || pickClip(cfg, chosen.name);
-    const clipRef = uploadCache.get(clipPath) || clipPath;
+    let clipRef = uploadCache.get(clipPath);
+    if (!clipRef) {
+      console.log(`${tag} uploading motion clip ${basename(clipPath)}...`);
+      const up = JSON.parse(await hf(["upload", "create", clipPath, "--json"], { timeoutMs: 10 * 60 * 1000 }));
+      const upObj = Array.isArray(up) ? up[0] : up;
+      if (!upObj?.id) throw new Error("clip upload returned no id");
+      clipRef = upObj.id;
+      uploadCache.set(clipPath, clipRef);
+    }
 
     // 3) Kling 3.0 Motion Control — Soul job id feeds in directly
     console.log(`${tag} animating with motion from ${basename(clipPath)} (${mode})...`);
@@ -145,12 +155,6 @@ for (let i = 0; i < count; i++) {
       "--wait", "--wait-timeout", "30m", "--json",
     ]));
     if (kling.status !== "completed") throw new Error(`video job ${kling.id} ended: ${kling.status}`);
-
-    // remember the uploaded clip id so the next videos skip re-upload
-    try {
-      const vid = (kling.params?.medias || []).find((m) => m.role === "video");
-      if (vid?.data?.id) uploadCache.set(clipPath, vid.data.id);
-    } catch { /* non-fatal */ }
 
     const url = kling.result_url || kling.min_result_url;
     if (!url) throw new Error(`video job ${kling.id} finished but returned no result URL`);
