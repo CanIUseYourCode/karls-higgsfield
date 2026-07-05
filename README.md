@@ -250,7 +250,8 @@ higgsfield-factory/
     onboard.mjs         setup state machine (--json for agents)
     status.mjs          credits + inventory (--json)
     make-videos.mjs     submit jobs (fast, non-blocking)
-    check.mjs           advance queue + download finished MP4s (free, run repeatedly)
+    check.mjs           advance queue + download finished MP4s (free, run repeatedly, always fast)
+    submit-video.mjs    detached worker for the slow Kling create call (spawned by check.mjs)
     job-status.mjs      inspect a single Higgsfield job (debugging)
     import-auth.mjs     connect a headless machine using credentials.json from a browser machine
     create-character.mjs Soul training from photos

@@ -75,10 +75,14 @@ node scripts/check.mjs
 
 `make-videos.mjs` uploads the motion clip, submits the image jobs, saves the
 work list to `output/queue.json`, and exits. `check.mjs` does everything else:
-when an image is ready it submits the video step, when a video is ready it
-downloads the MP4. Repeat `check.mjs` (wait ~2 minutes between runs) until
-`RESULT.all_done` is true, then deliver the files from `finished_now`
-(full history: `output/manifest.json`).
+when an image is ready it starts the video submit in a DETACHED background
+worker (Higgsfield's video-create call can block 10-20+ minutes before
+returning a job id — the worker absorbs that, not you), and when a video is
+ready it downloads the MP4. `check.mjs` itself always exits in seconds;
+output like "video submit still in progress" is normal, keep checking.
+Repeat `check.mjs` (wait ~2 minutes between runs) until `RESULT.all_done` is
+true, then deliver the files from `finished_now` (full history:
+`output/manifest.json`).
 
 Parallelism is handled entirely inside `check.mjs` (config
 `max_active_videos`). You never manage parallel jobs, pick image references,
