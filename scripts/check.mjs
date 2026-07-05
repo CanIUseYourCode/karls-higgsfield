@@ -8,20 +8,31 @@
 // RESULT:{...} JSON — RESULT.next always says the exact next command to run.
 //
 // What one run does, per queued item:
-//   stage "image":  Soul image done?  -> download image, stage "ready"
-//   stage "ready":  video slot free?  -> submit Kling 3.0 job, stage "video"
-//   stage "video":  video done?       -> download MP4, add to manifest, remove
-//   any failure                       -> record in output/failures.json, remove
+//   stage "image":      Soul image done? -> download image, stage "ready"
+//   stage "ready":      video slot free? -> spawn detached submit worker,
+//                       stage "submitting"  (the Kling create endpoint can
+//                       block for many minutes before returning the job id,
+//                       so it runs in a separate process that survives this
+//                       script exiting)
+//   stage "submitting": worker finished? -> record job id, stage "video"
+//   stage "video":      video done?      -> download MP4, manifest, remove
+//   any failure                          -> output/failures.json, remove
 
 import {
-  loadConfig, ensureDirs, hf, parseJob, parseCreate, getCredits, classifyFailure,
+  loadConfig, ensureDirs, hf, parseJob, getCredits, classifyFailure,
   readQueue, writeQueue, appendManifest, appendFailure, download,
 } from "./lib.mjs";
-import { join, basename } from "node:path";
+import { join, basename, dirname } from "node:path";
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const DONE_STATUSES = ["completed", "failed", "nsfw", "canceled", "cancelled"];
 const MAKE_CMD = 'node scripts/make-videos.mjs --character "<name>" --count <N>';
 const CHECK_CMD = "node scripts/check.mjs";
+const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
+// the submit worker itself times out at 30m; only assume it died after longer
+const SUBMIT_STALE_MS = 35 * 60 * 1000;
 
 const cfg = loadConfig();
 ensureDirs(cfg);
@@ -30,7 +41,7 @@ const queue = readQueue(cfg);
 if (queue.length === 0) {
   console.log("Queue is empty — nothing is rendering.");
   console.log("RESULT:" + JSON.stringify({
-    ok: true, pending: 0, stages: { image: 0, ready: 0, video: 0 },
+    ok: true, pending: 0, stages: { image: 0, ready: 0, submitting: 0, video: 0 },
     finished_now: [], failed_now: [], all_done: true,
     next: `Nothing pending. To make videos: ${MAKE_CMD}`,
   }));
@@ -44,9 +55,17 @@ async function getJob(id) {
 const finishedNow = [];
 const failedNow = [];
 const keep = [];
-const maxActive = cfg.max_active_videos || 2;
-let activeVideos = queue.filter((q) => q.stage === "video").length;
+const maxActive = cfg.max_active_videos || 5;
+let activeVideos = queue.filter((q) => q.stage === "video" || q.stage === "submitting").length;
 let authError = null;
+
+function sidecarPath(item) {
+  return join(cfg.output_dir, `.submit-${item.id}.json`);
+}
+
+function clearSidecar(item) {
+  try { unlinkSync(sidecarPath(item)); } catch { /* already gone */ }
+}
 
 function recordFailure(item, job, message) {
   const errorType = classifyFailure(message, job);
@@ -71,9 +90,9 @@ function recordFailure(item, job, message) {
   console.error(`[${item.id}] FAILED (${item.stage}): ${message}`);
 }
 
-// A video submit can time out on the client AFTER the server accepted the
-// job. Before submitting, look for an existing motion-control job made from
-// this exact image and adopt it instead of paying for a duplicate.
+// A submit may complete server-side even when the client gave up. Before
+// (re)submitting, look for an existing motion-control job made from this
+// exact image and adopt it instead of paying for a duplicate.
 let recentVideoJobs = null;
 async function findExistingVideoJob(soulJobId) {
   if (!recentVideoJobs) {
@@ -89,7 +108,22 @@ async function findExistingVideoJob(soulJobId) {
   ) || null;
 }
 
-async function submitVideo(item) {
+// Fire-and-forget: the worker keeps running after check.mjs exits and writes
+// its result to the sidecar file.
+function spawnSubmitWorker(item) {
+  const child = spawn(process.execPath, [join(SCRIPTS_DIR, "submit-video.mjs"), item.id], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.unref();
+  item.stage = "submitting";
+  item.submit_started = new Date().toISOString();
+  activeVideos++;
+  console.log(`[${item.id}] image ready — video submit started in the background (${item.mode})`);
+}
+
+async function startVideo(item) {
   const existing = await findExistingVideoJob(item.soul_job);
   if (existing) {
     console.log(`[${item.id}] found existing video job ${existing.id} for this image — adopting it, NOT resubmitting`);
@@ -98,19 +132,7 @@ async function submitVideo(item) {
     activeVideos++;
     return;
   }
-  console.log(`[${item.id}] image ready — submitting Kling 3.0 video (${item.mode})...`);
-  const kling = parseCreate(await hf([
-    "generate", "create", "kling3_0_motion_control",
-    "--image", item.soul_job,
-    "--video", item.clip_upload_id,
-    "--mode", item.mode,
-    "--background_source", cfg.background_source || "input_image",
-    "--json",
-  ], { timeoutMs: 10 * 60 * 1000 }));
-  if (!kling?.id) throw new Error("video submit returned no job id");
-  item.kling_job = kling.id;
-  item.stage = "video";
-  activeVideos++;
+  spawnSubmitWorker(item);
 }
 
 for (let idx = 0; idx < queue.length; idx++) {
@@ -134,11 +156,55 @@ for (let idx = 0; idx < queue.length; idx++) {
 
     if (item.stage === "ready") {
       if (activeVideos < maxActive) {
-        await submitVideo(item);
+        await startVideo(item);
       } else {
         console.log(`[${item.id}] image ready — waiting for a video slot (${activeVideos}/${maxActive} busy)`);
       }
-    } else if (item.stage === "video" && item.kling_job) {
+    }
+
+    if (item.stage === "submitting") {
+      const sc = sidecarPath(item);
+      if (existsSync(sc)) {
+        let result = null;
+        try { result = JSON.parse(readFileSync(sc, "utf8")); } catch { /* partial write; try next run */ }
+        if (result?.ok && result.kling_job) {
+          item.kling_job = result.kling_job;
+          item.stage = "video";
+          clearSidecar(item);
+          console.log(`[${item.id}] video job submitted: ${item.kling_job}`);
+        } else if (result && !result.ok) {
+          // worker failed — the job may still exist server-side (client-side
+          // timeout); adopt it if so, otherwise record the failure
+          const existing = await findExistingVideoJob(item.soul_job);
+          clearSidecar(item);
+          if (existing) {
+            item.kling_job = existing.id;
+            item.stage = "video";
+            console.log(`[${item.id}] submit worker errored but the job exists (${existing.id}) — adopting it`);
+          } else {
+            activeVideos--;
+            recordFailure(item, null, `video submit failed: ${result.error}`);
+            continue; // drop from queue
+          }
+        }
+      } else if (Date.now() - Date.parse(item.submit_started || 0) > SUBMIT_STALE_MS) {
+        // worker never reported back (machine restart?) — adopt or retry
+        const existing = await findExistingVideoJob(item.soul_job);
+        if (existing) {
+          item.kling_job = existing.id;
+          item.stage = "video";
+          console.log(`[${item.id}] stale submit but the job exists (${existing.id}) — adopting it`);
+        } else {
+          activeVideos--;
+          item.stage = "ready";
+          console.log(`[${item.id}] submit worker went silent — will retry on a free slot`);
+        }
+      } else {
+        console.log(`[${item.id}] video submit still in progress (this can take several minutes)`);
+      }
+    }
+
+    if (item.stage === "video" && item.kling_job) {
       const job = await getJob(item.kling_job);
       if (job.status === "completed") {
         const url = job.result_url || job.min_result_url;
@@ -186,7 +252,7 @@ for (let idx = 0; idx < queue.length; idx++) {
 
 writeQueue(cfg, keep);
 
-const stages = { image: 0, ready: 0, video: 0 };
+const stages = { image: 0, ready: 0, submitting: 0, video: 0 };
 for (const q of keep) stages[q.stage] = (stages[q.stage] || 0) + 1;
 const pending = keep.length;
 const credits = await getCredits();
@@ -201,7 +267,7 @@ if (authError) {
 }
 
 console.log(
-  `Pending: ${pending} (${stages.image} image, ${stages.ready} awaiting slot, ${stages.video} video)` +
+  `Pending: ${pending} (${stages.image} image, ${stages.ready} awaiting slot, ${stages.submitting} submitting, ${stages.video} video)` +
   ` | finished now: ${finishedNow.length}, failed now: ${failedNow.length}` +
   (credits !== null ? ` | credits left: ${credits}` : "")
 );
