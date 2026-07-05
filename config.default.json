@@ -10,7 +10,7 @@
   "output_dir": "output",
   "prompt_api": "https://outfit-extractor.vercel.app/api/random-outfit/all",
   "prompt_preset": "",
-  "extra_prompt": "photorealistic skin texture, natural lighting, sharp focus, no distortions or warping, high detail",
+  "extra_prompt": "",
   "firestore_fallback": {
     "url": "https://firestore.googleapis.com/v1/projects/gen-lang-client-0729304290/databases/ai-studio-a5fcd6f6-7a22-4d5d-b310-afab4361d2bf/documents:runQuery",
     "collection": "prompts",

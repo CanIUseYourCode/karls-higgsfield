@@ -156,7 +156,7 @@ image↔video pairing is 1:1 by construction (auditable per row in
 |---|---|
 | **Who** (identity/face) | the character name → its trained Soul ID |
 | **What they wear** | random outfit from your database (or `--prompt` to fully override) |
-| **Where / lighting / vibe** | `--extra-prompt` (+ the realism default in config) |
+| **Where / lighting / vibe** | `--extra-prompt` (only when explicitly requested) |
 | **How they move** | the motion clip |
 | **Quality** | `pro` 1080p (default) or `--mode std` 720p to save credits |
 
@@ -194,7 +194,7 @@ Created from `config.default.json` on first onboarding. Notable keys:
 | `max_active_videos` | `5` | Kling jobs rendering at once; extra images wait as `ready` (a rejected submit just retries next check) |
 | `max_videos_per_request` | `10` | hard cap per request |
 | `credit_floor` | `25` | refuse to start below this balance |
-| `extra_prompt` | realism string | appended to every image prompt |
+| `extra_prompt` | `""` | optional text appended to every image prompt (off by default) |
 | `prompt_api` | outfit-extractor URL | primary prompt source (text/plain) |
 | `prompt_preset` | `""` | prepended to Firestore-fallback prompts |
 | `firestore_fallback` | (Firestore query) | used automatically if `prompt_api` is down |
