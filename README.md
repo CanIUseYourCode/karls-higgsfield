@@ -82,11 +82,49 @@ Re-running onboarding any time re-checks everything; it's safe and free.
 | "make 1 video of Mia" | `make-videos.mjs --character "Mia" --count 1` |
 | "make 5 pro videos of yumi at golden hour" | `make-videos.mjs --character yumi --count 5 --mode pro --extra-prompt "golden hour"` |
 | "how much would 10 videos cost?" | same with `--dry-run` (spends nothing) |
+| "did this Higgs job fail?" | `job-status.mjs --job <job_id>` |
 | "create a character called Ana from these photos" | `create-character.mjs --name "Ana" --images <folder>` |
 | "show me my videos" | `serve-ui.mjs` → http://localhost:7788 |
 
 Results land in `output/`: the MP4, the Soul reference image, and `manifest.json`
 (the dashboard's index).
+
+Failures land in `output/failures.json`. Agent runtimes should parse the final
+`RESULT:{...}` line from every script, not the human progress text.
+
+---
+
+## Agent runtime contract
+
+This repo is designed to be reusable from OpenClaw, Hermes, MaxAgents, or an EC2
+agent runner.
+
+Required behavior:
+
+1. Run `node scripts/onboard.mjs --json` before spending credits.
+2. Parse only the last `RESULT:{...}` line from each script.
+3. For video generation, store every returned `soul_job` and `kling_job`.
+4. Use `node scripts/job-status.mjs --job <job_id>` to detect Higgsfield states:
+   `waiting`, `in_progress`, `completed`, `failed`, and `nsfw`.
+5. Treat `failed` as the same state shown in the Higgsfield UI card as
+   "Generation failed".
+6. Use `RESULT.failures[]` or `output/failures.json` to decide retry behavior.
+
+Failure fields include:
+
+| field | meaning |
+|---|---|
+| `stage` | `image`, `upload`, or `video` |
+| `error_type` | `generation_failed`, `content_blocked`, `timeout`, `auth`, `credits`, or `unknown` |
+| `status` | Higgsfield job status when known |
+| `soul_job` / `kling_job` | Higgsfield ids to inspect or retry |
+| `retryable` | false for moderation/auth/credit failures |
+
+Parallel video jobs are supported by Higgsfield. A live test accepted two
+Kling 3.0 Motion Control jobs at the same timestamp and both moved to
+`in_progress`. Keep the default agent concurrency conservative: start with 2
+video jobs at a time, poll with `job-status.mjs`, and increase only after the
+account behaves reliably.
 
 ---
 

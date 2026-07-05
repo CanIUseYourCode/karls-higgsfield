@@ -72,6 +72,60 @@ node scripts/make-videos.mjs --character "<name>" --count <N>
   batch. **A job status of `nsfw` means Higgsfield's content filter blocked
   that specific generation** — it's not a bug; tell the user plainly and move on.
 
+Agent-facing failure handling:
+- If `RESULT.failed > 0`, inspect `RESULT.failures[]`. Each failure includes
+  `stage`, `error_type`, `status`, `soul_job`, `kling_job`, `retryable`,
+  `message`, and local `image`/`clip` names when known. Do not scrape prose for
+  failure details.
+- A Higgsfield History card that says "Generation failed" maps to a job whose
+  status is usually `failed`. Treat this as machine-detectable by job id, not as
+  a visual-only state.
+- A job status of `nsfw` means Higgsfield's content filter blocked that specific
+  generation. It is not a bug; report it plainly and move on or retry with a
+  softer prompt.
+
+## Job status and failure detection
+
+Use this for agent runtimes that need to monitor jobs after submission:
+
+```bash
+node scripts/job-status.mjs --job <higgsfield_job_id>
+```
+
+The last line is `RESULT:{...}`. Parse `RESULT.job.status`, `RESULT.job.failed`,
+and `RESULT.job.done`.
+
+Important statuses:
+- `waiting` or `in_progress`: the Higgsfield History spinner/card is live.
+- `completed`: use `RESULT.job.result_url` or the downloaded file from
+  `make-videos.mjs`.
+- `failed`: the UI shows "Generation failed"; mark this item failed and retry
+  only if your workflow allows another video attempt.
+- `nsfw`: content moderation blocked the job; do not retry the same prompt.
+
+Recent video jobs:
+
+```bash
+node scripts/job-status.mjs --recent 20
+```
+
+Use this when an agent was interrupted and needs to recover outstanding
+Higgsfield jobs from the account history.
+
+## Parallel video jobs
+
+Kling 3.0 Motion Control jobs can be accepted in parallel. A live test accepted
+two jobs at the same timestamp and both moved to `in_progress`.
+
+Agent guidance:
+- Keep a small concurrency limit by default, e.g. 2 video jobs at a time.
+- Store every `kling_job` id as soon as it is known.
+- Poll each job with `job-status.mjs` until `done` is true.
+- Download completed `result_url` values and record failed jobs separately.
+- If a submit hangs before a job id is known, do not assume the job exists.
+  Check `job-status.mjs --recent 20`; if no new row exists, retry submission
+  with an already-generated Soul image rather than regenerating the image.
+
 Useful flags:
 - `--mode pro` — higher quality, more credits (default `std`).
 - `--clip <path>` — force a specific motion clip (default: random from pool).

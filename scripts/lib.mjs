@@ -255,6 +255,22 @@ export function appendManifest(cfg, entry) {
   writeFileSync(manifestPath(cfg), JSON.stringify(list, null, 2));
 }
 
+export function failuresPath(cfg) {
+  return join(cfg.output_dir, "failures.json");
+}
+
+export function readFailures(cfg) {
+  const p = failuresPath(cfg);
+  if (!existsSync(p)) return [];
+  try { return JSON.parse(readFileSync(p, "utf8")); } catch { return []; }
+}
+
+export function appendFailure(cfg, entry) {
+  const list = readFailures(cfg);
+  list.unshift(entry);
+  writeFileSync(failuresPath(cfg), JSON.stringify(list, null, 2));
+}
+
 // ---------- downloads ----------
 
 export async function download(url, filePath) {

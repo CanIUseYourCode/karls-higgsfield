@@ -17,7 +17,8 @@
 
 import {
   loadConfig, ensureDirs, hf, parseJob, getCredits, resolveCharacter,
-  fetchOutfitPrompts, pickClip, listClips, slug, appendManifest, download, ROOT,
+  fetchOutfitPrompts, pickClip, listClips, slug, appendManifest, appendFailure,
+  download, ROOT,
 } from "./lib.mjs";
 import { join, basename } from "node:path";
 import { existsSync } from "node:fs";
@@ -41,6 +42,29 @@ function fail(msg) {
   console.error(`ERROR: ${msg}`);
   console.log("RESULT:" + JSON.stringify({ ok: false, error: msg }));
   process.exit(1);
+}
+
+const JOB_ID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
+
+function classifyFailure(message, job) {
+  const status = job?.status || "";
+  if (status === "nsfw" || /nsfw|content filter|moderation/i.test(message)) return "content_blocked";
+  if (status === "failed" || /status "failed"|status failed|generation failed/i.test(message)) return "generation_failed";
+  if (/timed out|timeout/i.test(message)) return "timeout";
+  if (/not authenticated|session expired|login/i.test(message)) return "auth";
+  if (/credits|balance|floor/i.test(message)) return "credits";
+  return "unknown";
+}
+
+async function jobFromError(error) {
+  const message = String(error?.message || error || "");
+  const id = message.match(JOB_ID_RE)?.[0] || null;
+  if (!id) return { id: null, job: null };
+  try {
+    return { id, job: parseJob(await hf(["generate", "get", id, "--json"], { timeoutMs: 60_000 })) };
+  } catch {
+    return { id, job: null };
+  }
 }
 
 const args = parseArgs(process.argv);
@@ -114,15 +138,23 @@ if (args.dryRun) {
 const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "").replace(/(\d{8})(\d{4})/, "$1_$2");
 const uploadCache = new Map(); // clip path -> higgsfield upload id (avoid re-uploading)
 const results = [];
+const failures = [];
 let failed = 0;
 
 for (let i = 0; i < count; i++) {
   const label = `${slug(chosen.name)}_${stamp}_${i + 1}`;
   const tag = `[${i + 1}/${count}]`;
+  let stage = "starting";
+  let soul = null;
+  let kling = null;
+  let imageFile = null;
+  let clipPath = null;
+  let clipRef = null;
   try {
     // 1) Soul 2.0 image with the character identity
+    stage = "image";
     console.log(`${tag} generating Soul 2.0 image of ${chosen.name}...`);
-    const soul = parseJob(await hf([
+    soul = parseJob(await hf([
       "generate", "create", "text2image_soul_v2",
       "--prompt", prompts[i],
       "--soul-id", chosen.id,
@@ -131,7 +163,6 @@ for (let i = 0; i < count; i++) {
       "--wait", "--json",
     ]));
     if (soul.status !== "completed") throw new Error(`image job ${soul.id} ended: ${soul.status}`);
-    let imageFile = null;
     if (soul.result_url) {
       imageFile = join(cfg.output_dir, `${label}_image.png`);
       try { await download(soul.result_url, imageFile); } catch { imageFile = null; }
@@ -140,8 +171,9 @@ for (let i = 0; i < count; i++) {
     // 2) pick motion clip and upload it explicitly (the CLI hangs if generate
     //    create has to auto-upload a local video for this job type); cache the
     //    upload id so the same file only uploads once per run
-    const clipPath = args.clip || pickClip(cfg, chosen.name);
-    let clipRef = uploadCache.get(clipPath);
+    stage = "upload";
+    clipPath = args.clip || pickClip(cfg, chosen.name);
+    clipRef = uploadCache.get(clipPath);
     if (!clipRef) {
       console.log(`${tag} uploading motion clip ${basename(clipPath)}...`);
       const up = JSON.parse(await hf(["upload", "create", clipPath, "--json"], { timeoutMs: 10 * 60 * 1000 }));
@@ -152,8 +184,9 @@ for (let i = 0; i < count; i++) {
     }
 
     // 3) Kling 3.0 Motion Control — Soul job id feeds in directly
+    stage = "video";
     console.log(`${tag} animating with motion from ${basename(clipPath)} (${mode})...`);
-    const kling = parseJob(await hf([
+    kling = parseJob(await hf([
       "generate", "create", "kling3_0_motion_control",
       "--image", soul.id,
       "--video", clipRef,
@@ -188,7 +221,33 @@ for (let i = 0; i < count; i++) {
     console.log(`${tag} DONE -> ${videoFile}`);
   } catch (e) {
     failed++;
-    console.error(`${tag} FAILED: ${e.message}`);
+    const message = String(e?.message || e);
+    const failedJob = await jobFromError(e);
+    if (!kling && failedJob.job?.job_type?.includes("motion_control")) kling = failedJob.job;
+    if (!soul && failedJob.job?.job_type?.includes("soul")) soul = failedJob.job;
+
+    const job = failedJob.job || kling || soul || null;
+    const errorType = classifyFailure(message, job);
+    const failure = {
+      time: new Date().toISOString(),
+      character: chosen.name,
+      index: i + 1,
+      stage,
+      error_type: errorType,
+      status: job?.status || null,
+      message,
+      soul_job: soul?.id || null,
+      kling_job: kling?.id || failedJob.id,
+      job_type: job?.job_type || null,
+      result_url: job?.result_url || null,
+      image: imageFile ? basename(imageFile) : null,
+      clip: clipPath ? basename(clipPath) : null,
+      retryable: !["content_blocked", "auth", "credits"].includes(errorType),
+    };
+    failures.push(failure);
+    appendFailure(cfg, failure);
+    console.error(`${tag} FAILED: ${message}`);
+    console.error(`${tag} FAILURE_JSON:${JSON.stringify(failure)}`);
   }
 }
 
@@ -202,6 +261,7 @@ console.log("RESULT:" + JSON.stringify({
   character: chosen.name,
   made: results.map((r) => ({ video: join(cfg.output_dir, r.video), image: r.image ? join(cfg.output_dir, r.image) : null })),
   failed,
+  failures,
   credits_spent: spent,
   credits_left: creditsEnd,
 }));

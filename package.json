@@ -6,6 +6,8 @@
   "engines": { "node": ">=18" },
   "scripts": {
     "onboard": "node scripts/onboard.mjs",
+    "status": "node scripts/status.mjs --json",
+    "job-status": "node scripts/job-status.mjs",
     "ui": "node scripts/serve-ui.mjs"
   },
   "license": "MIT"
