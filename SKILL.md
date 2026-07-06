@@ -137,6 +137,23 @@ Each failure has `stage`, `error_type`, `status`, `retryable`, and job ids.
   (add `--force` if the character still has other pending videos).
 - One failure never stops the rest of the batch.
 
+## Direct method ("second method") — ONLY on explicit request
+
+When the user explicitly says "use the second method" / "direct method" /
+"the RUN ME.bat way", replace the submit+check loop with ONE blocking command:
+
+```bash
+node scripts/run-direct.mjs --character "<name>" --count <N>
+```
+
+Same flags as make-videos.mjs (minus --force/--dry-run). It does each video
+start-to-finish in sequence — Soul image, clip upload, Kling render, download —
+and BLOCKS 5-20+ minutes PER VIDEO. Run it with the longest timeout your
+environment allows and never kill it. Progress is mirrored into the queue, so
+if it does get killed, `node scripts/check.mjs` recovers the in-flight videos
+(never run check.mjs WHILE run-direct is running — only after it stops).
+Without explicit user request, always use the normal submit+check flow.
+
 ## Create a character — "train/make a character from these photos"
 
 Training costs credits and takes several minutes. ALWAYS confirm first, and
