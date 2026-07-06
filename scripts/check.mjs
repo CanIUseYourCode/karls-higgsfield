@@ -187,20 +187,23 @@ for (let idx = 0; idx < queue.length; idx++) {
             continue; // drop from queue
           }
         }
-      } else if (Date.now() - Date.parse(item.submit_started || 0) > SUBMIT_STALE_MS) {
-        // worker never reported back (machine restart?) — adopt or retry
+      } else {
+        // the job registers server-side within seconds of the worker's
+        // --wait create — adopt the id now instead of waiting for the
+        // worker to babysit the whole render
         const existing = await findExistingVideoJob(item.soul_job);
         if (existing) {
           item.kling_job = existing.id;
           item.stage = "video";
-          console.log(`[${item.id}] stale submit but the job exists (${existing.id}) — adopting it`);
-        } else {
+          console.log(`[${item.id}] video job is live (${existing.id}) — tracking it`);
+        } else if (Date.now() - Date.parse(item.submit_started || 0) > SUBMIT_STALE_MS) {
+          // worker never reported back (machine restart?) and no job exists
           activeVideos--;
           item.stage = "ready";
           console.log(`[${item.id}] submit worker went silent — will retry on a free slot`);
+        } else {
+          console.log(`[${item.id}] video submit still in progress`);
         }
-      } else {
-        console.log(`[${item.id}] video submit still in progress (this can take several minutes)`);
       }
     }
 
@@ -226,10 +229,12 @@ for (let idx = 0; idx < queue.length; idx++) {
         });
         finishedNow.push({ video: videoFile, image: item.image_file || null, character: item.character });
         activeVideos--;
+        clearSidecar(item); // an adopted item's worker may have left one behind
         console.log(`[${item.id}] DONE -> ${videoFile}`);
         continue; // drop from queue
       } else if (DONE_STATUSES.includes(job.status)) {
         activeVideos--;
+        clearSidecar(item);
         recordFailure(item, job, `video job ${item.kling_job} ended: ${job.status}`);
         continue; // drop from queue
       } else {

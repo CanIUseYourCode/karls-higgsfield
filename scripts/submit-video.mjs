@@ -37,14 +37,20 @@ if (!item) finish({ ok: false, error: `queue item ${itemId} not found` });
 if (item.kling_job) finish({ ok: true, kling_job: item.kling_job });
 
 try {
+  // IMPORTANT: --wait is required. Without it the CLI's create call for
+  // motion control hangs indefinitely and the job is never registered;
+  // with it the job appears server-side within seconds (measured live).
+  // Blocking through the render is fine — this worker is detached, and
+  // check.mjs adopts the job id from `generate list` long before we return.
   const kling = parseCreate(await hf([
     "generate", "create", "kling3_0_motion_control",
     "--image", item.soul_job,
     "--video", item.clip_upload_id,
     "--mode", item.mode,
     "--background_source", cfg.background_source || "input_image",
+    "--wait", "--wait-timeout", "30m",
     "--json",
-  ], { timeoutMs: 30 * 60 * 1000 }));
+  ], { timeoutMs: 35 * 60 * 1000 }));
   if (!kling?.id) finish({ ok: false, error: "video submit returned no job id" });
   finish({ ok: true, kling_job: kling.id });
 } catch (e) {
